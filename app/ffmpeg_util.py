@@ -12,7 +12,10 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 def get_ffmpeg_paths() -> tuple[str, str]:
     """
-    Returns (ffmpeg_path, ffprobe_path) for dev and PyInstaller packaged modes.
+    Return (ffmpeg_path, ffprobe_path) for development and packaged modes.
+
+    PyInstaller stores bundled files under _MEIPASS; during development,
+    the project root is used instead.
     """
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     ffmpeg = base / "ffmpeg_bin" / "ffmpeg.exe"
@@ -21,6 +24,7 @@ def get_ffmpeg_paths() -> tuple[str, str]:
 
 
 def _build_trim_args(trim_start_ms: int | None, trim_end_ms: int | None) -> list[str]:
+    """Validate optional trim points and convert them to FFmpeg time arguments."""
     if trim_start_ms is None and trim_end_ms is None:
         return []
     if trim_start_ms is None or trim_end_ms is None:
@@ -34,6 +38,7 @@ def _build_trim_args(trim_start_ms: int | None, trim_end_ms: int | None) -> list
 
 
 def compress_mp4(input_path: str, output_path: str, trim_start_ms: int | None = None, trim_end_ms: int | None = None) -> None:
+    """Re-encode an MP4 with standard H.264/AAC settings and optional trimming."""
     ffmpeg, _ = get_ffmpeg_paths()
 
     if not os.path.exists(ffmpeg):
@@ -54,7 +59,7 @@ def compress_mp4(input_path: str, output_path: str, trim_start_ms: int | None = 
         output_path,
     ]
 
-    # Capture output so you can show errors in the UI later
+    # Capture FFmpeg output so failures can be displayed by the UI.
     p = subprocess.run(cmd, capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip() or "FFmpeg failed")
@@ -66,6 +71,7 @@ def clip_mp4(
     trim_start_ms: int,
     trim_end_ms: int,
 ) -> None:
+    """Copy the selected stream range without re-encoding the video."""
     ffmpeg, _ = get_ffmpeg_paths()
 
     if not os.path.exists(ffmpeg):
@@ -91,6 +97,7 @@ def clip_mp4(
 
 
 def get_duration_seconds(input_path: str) -> float:
+    """Read the source duration in seconds using FFprobe."""
     _, ffprobe = get_ffmpeg_paths()
 
     if not os.path.exists(ffprobe):
@@ -124,6 +131,7 @@ def compress_mp4_to_target_size(
     trim_end_ms: int | None = None,
     target_size_mb: float = TARGET_SIZE_MB,
 ) -> None:
+    """Two-pass encode an MP4 so its bitrate targets the requested file size."""
     ffmpeg, _ = get_ffmpeg_paths()
 
     if not os.path.exists(ffmpeg):
@@ -138,6 +146,7 @@ def compress_mp4_to_target_size(
     if duration_seconds <= 0:
         raise RuntimeError("Invalid duration reported by FFprobe")
 
+    # Estimate the total bitrate from the requested size and clip duration.
     target_bits = target_size_mb * 1024 * 1024 * 8
     total_bps = target_bits / duration_seconds
     video_bps = max(int(total_bps - AUDIO_BPS - OVERHEAD_BPS), MIN_VIDEO_BPS)
@@ -146,6 +155,7 @@ def compress_mp4_to_target_size(
 
     trim_args = _build_trim_args(trim_start_ms, trim_end_ms)
 
+    # First pass analyzes complexity without writing audio or the final file.
     pass1 = [
         ffmpeg,
         "-y",
@@ -166,6 +176,7 @@ def compress_mp4_to_target_size(
         "NUL",
     ]
 
+    # Second pass uses the analysis data and writes the final MP4.
     pass2 = [
         ffmpeg,
         "-y",
@@ -198,6 +209,7 @@ def compress_mp4_to_target_size(
         if p2.returncode != 0:
             raise RuntimeError(p2.stderr.strip() or "FFmpeg pass 2 failed")
     finally:
+        # Remove temporary two-pass log files whether encoding succeeds or fails.
         passlog_dir = Path(passlog_base).parent
         passlog_stem = Path(passlog_base).name
         for name in (
